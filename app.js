@@ -1,7 +1,4 @@
-// Simple viewer for OHGO (ODOT) Toledo cameras
-// Docs: https://publicapi.ohgo.com/docs/v1/cameras
-// You need an API key: https://publicapi.ohgo.com/docs/registration
-
+// Toledo OHGO Cameras — robust parser for API Result wrapper
 const els = {
   apiKey: document.getElementById('apiKey'),
   saveKey: document.getElementById('saveKey'),
@@ -16,34 +13,39 @@ const els = {
 let cameras = [];
 let timer = null;
 
-function getKey() {
-  return localStorage.getItem('ohgo_api_key') || '';
-}
-function setKey(k) {
-  localStorage.setItem('ohgo_api_key', k);
-}
+function getKey() { return localStorage.getItem('ohgo_api_key') || ''; }
+function setKey(k) { localStorage.setItem('ohgo_api_key', k); }
 
 function status(msg, isError=false) {
   els.status.textContent = msg;
   els.status.className = isError ? 'status error' : 'status';
 }
 
+// Normalize any OHGO response into an array of Camera records
+function normalize(result) {
+  if (!result) return [];
+  if (Array.isArray(result)) return result;
+  if (Array.isArray(result.Results)) return result.Results;
+  if (Array.isArray(result.items)) return result.items;
+  if (Array.isArray(result.data)) return result.data;
+  if (Array.isArray(result.results)) return result.results;
+  return [];
+}
+
 async function fetchCameras() {
   const key = getKey();
-  if (!key) {
-    status('Enter your OHGO API key above, then press Save.');
-    return;
-  }
+  if (!key) { status('Enter your OHGO API key above, then press Save.'); return; }
   status('Loading cameras…');
   try {
     const url = 'https://publicapi.ohgo.com/api/v1/cameras?region=toledo&page-all=true';
     const res = await fetch(url, { headers: { 'Authorization': 'APIKEY ' + key } });
     if (!res.ok) {
-      let text = await res.text();
-      throw new Error('API error ' + res.status + ': ' + text);
+      const text = await res.text();
+      throw new Error(`API error ${res.status}: ${text}`);
     }
     const data = await res.json();
-    cameras = data.items || data || [];
+    cameras = normalize(data);
+    if (!Array.isArray(cameras)) cameras = [];
     render();
     status(`Loaded ${cameras.length} camera sites.`);
   } catch (err) {
@@ -54,21 +56,21 @@ async function fetchCameras() {
 
 function render() {
   const q = (els.search.value || '').toLowerCase().trim();
-  const sizeField = els.imgSize.value; // SmallUrl or LargeUrl
+  const sizeField = els.imgSize.value; // "SmallUrl" or "LargeUrl"
   els.grid.innerHTML = '';
 
   let count = 0;
   for (const cam of cameras) {
-    // Each camera has one or more views (directions)
-    const views = Array.isArray(cam.cameraViews) ? cam.cameraViews : [];
+    const views = Array.isArray(cam.CameraViews) ? cam.CameraViews : [];
     for (const v of views) {
-      const label = cam.location || cam.description || 'Camera';
-      const meta = [v.mainRoute, v.direction].filter(Boolean).join(' • ');
+      const label = cam.Location || cam.Description || 'Camera';
+      const meta = [v.MainRoute, v.Direction].filter(Boolean).join(' • ');
       const hay = (label + ' ' + meta).toLowerCase();
-
       if (q && !hay.includes(q)) continue;
 
       const imgUrl = v[sizeField] || v.SmallUrl || v.LargeUrl;
+      if (!imgUrl) continue;
+
       const card = document.createElement('article');
       card.className = 'card';
       card.innerHTML = `
@@ -85,11 +87,9 @@ function render() {
       count++;
     }
   }
-
   if (count === 0) {
     els.grid.innerHTML = '<div class="empty">No cameras match your filter.</div>';
   }
-
   startAutoRefresh();
   bustAll();
 }
@@ -99,8 +99,6 @@ function bustAll() {
   document.querySelectorAll('.figure img').forEach(img => {
     const base = img.getAttribute('data-base');
     if (!base) return;
-    const url = new URL(base, window.location.origin);
-    // Add cache-busting param. If image URL already has query, append.
     const sep = base.includes('?') ? '&' : '?';
     img.src = base + sep + 't=' + now;
   });
@@ -111,25 +109,17 @@ function startAutoRefresh() {
   const seconds = parseInt(els.interval.value, 10) || 10;
   timer = setInterval(bustAll, seconds * 1000);
 }
-
-function stopAutoRefresh() {
-  if (timer) { clearInterval(timer); timer = null; }
-}
+function stopAutoRefresh() { if (timer) { clearInterval(timer); timer = null; } }
 
 function escapeHTML(s) {
   return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
-// Wire up UI
-els.saveKey.addEventListener('click', () => {
-  setKey(els.apiKey.value.trim());
-  fetchCameras();
-});
+els.saveKey.addEventListener('click', () => { setKey(els.apiKey.value.trim()); fetchCameras(); });
 els.interval.addEventListener('change', startAutoRefresh);
 els.imgSize.addEventListener('change', render);
 els.search.addEventListener('input', () => render());
 els.refreshNow.addEventListener('click', bustAll);
 
-// Init
 els.apiKey.value = getKey();
 if (getKey()) { fetchCameras(); } else { status('Enter your OHGO API key above, then press Save.'); }
