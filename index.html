@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Toledo Traffic Cameras (ODOT / OHGO)</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <h1>Toledo Traffic Cameras</h1>
+    <div class="controls">
+      <label>OHGO API Key:
+        <input type="password" id="apiKey" placeholder="Paste your API key">
+      </label>
+      <button id="saveKey">Save</button>
+      <label>Refresh every:
+        <select id="interval">
+          <option value="5">5s</option>
+          <option value="10" selected>10s</option>
+          <option value="15">15s</option>
+          <option value="30">30s</option>
+          <option value="60">60s</option>
+        </select>
+      </label>
+      <label>Size:
+        <select id="imgSize">
+          <option value="SmallUrl" selected>Small</option>
+          <option value="LargeUrl">Large</option>
+        </select>
+      </label>
+      <input type="search" id="search" placeholder="Filter by route/intersection…">
+      <button id="refreshNow">Refresh now</button>
+    </div>
+    <p class="hint">
+      Uses the <a href="https://publicapi.ohgo.com/docs/v1/cameras" target="_blank" rel="noreferrer">OHGO Cameras API</a> (ODOT).
+      Enter your API key above (stored locally in your browser).
+    </p>
+  </header>
+
+  <main>
+    <div id="status" class="status">Loading…</div>
+    <div id="grid" class="grid"></div>
+  </main>
+
+  <footer>
+    <small>
+      Snapshot images update approximately every 5 seconds. Data &copy; Ohio Department of Transportation (ODOT) / OHGO.
+    </small>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
