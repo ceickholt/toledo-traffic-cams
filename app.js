@@ -1,4 +1,4 @@
-// app.js — Toledo OHGO Cameras with Mini Map (GitHub Pages / Google Sites friendly)
+// app.js — Lucas County only, location labels, working size toggle, large-view modal
 
 // ---------- DOM ----------
 const els = {
@@ -10,18 +10,17 @@ const els = {
   status: document.getElementById('status'),
   grid: document.getElementById('grid'),
   refreshNow: document.getElementById('refreshNow'),
-  map: document.getElementById('map'),
-  mapWrap: document.getElementById('mapWrap'),
-  toggleMap: document.getElementById('toggleMap'),
-  fitMap: document.getElementById('fitMap'),
+  // Lightbox
+  lb: document.getElementById('lightbox'),
+  lbBackdrop: document.getElementById('lbBackdrop'),
+  lbClose: document.getElementById('lbClose'),
+  lbTitle: document.getElementById('lbTitle'),
+  lbImg: document.getElementById('lbImg'),
+  lbMeta: document.getElementById('lbMeta'),
 };
 
 let cameras = [];
 let timer = null;
-
-// Map state
-let map, markerLayer;
-const markerByCamId = new Map();
 
 // ---------- Storage ----------
 function getKey(){ return localStorage.getItem('ohgo_api_key') || ''; }
@@ -32,9 +31,12 @@ function status(msg, isError=false){
   els.status.textContent = msg;
   els.status.className = isError ? 'status error' : 'status';
 }
-
 function escapeHTML(s){
   return (s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function cacheBust(url){
+  const sep = url.includes('?') ? '&' : '?';
+  return url + sep + 't=' + Date.now();
 }
 
 // ---------- Data helpers ----------
@@ -49,7 +51,6 @@ function normalize(result){
   }catch(e){}
   return [];
 }
-
 async function fetchJSON(url, opts={}){
   const res = await fetch(url, opts);
   const ctype = res.headers.get('content-type') || '';
@@ -62,13 +63,9 @@ async function fetchJSON(url, opts={}){
   throw new Error('Expected JSON but got: ' + t.slice(0,200));
 }
 
-// Rough bounding box around the Toledo metro
-function inToledoBbox(lat, lon){
-  return lat <= 41.85 && lat >= 41.30 && lon >= -84.10 && lon <= -83.20;
-}
-function looksToledoByText(cam){
-  const txt = JSON.stringify(cam || {}).toLowerCase();
-  return txt.includes('toledo') || txt.includes('lucas') || txt.includes('i-75') || txt.includes('i-475') || txt.includes('i75') || txt.includes('i475');
+// County, Lat, Lon extraction
+function extractCounty(cam){
+  return cam.County ?? cam.county ?? cam.CountyName ?? cam.countyName ?? null;
 }
 function extractLat(cam){
   return cam.Latitude ?? cam.latitude ?? cam.lat ?? cam.LocationLat ?? cam.locationLat ?? null;
@@ -76,8 +73,20 @@ function extractLat(cam){
 function extractLon(cam){
   return cam.Longitude ?? cam.longitude ?? cam.lon ?? cam.lng ?? cam.long ?? cam.LocationLon ?? cam.locationLon ?? null;
 }
-function cameraId(cam, idx){
-  return cam.Id ?? cam.ID ?? cam.CameraId ?? cam.CameraID ?? `site-${idx}`;
+// Lucas County filter
+function isLucasCounty(cam){
+  const c = (extractCounty(cam) || '').toString().toLowerCase();
+  if (c.includes('lucas')) return true;
+  // Fallback: Lucas County / Toledo-ish bbox
+  const lat = extractLat(cam), lon = extractLon(cam);
+  if (typeof lat === 'number' && typeof lon === 'number'){
+    // Tight box around Lucas County
+    const inBox = (lat <= 41.85 && lat >= 41.30 && lon >= -83.90 && lon <= -83.20);
+    return inBox;
+  }
+  // Last-chance hint via text
+  const txt = JSON.stringify(cam || {}).toLowerCase();
+  return txt.includes('lucas') || txt.includes('toledo');
 }
 
 // ---------- Fetch logic ----------
@@ -86,79 +95,47 @@ async function fetchCameras(){
   if (!key){ status('Enter your OHGO API key above, then press Save.'); return; }
   status('Loading cameras…');
 
-  const baseToledo = 'https://publicapi.ohgo.com/api/v1/cameras?region=toledo&page-all=true';
-  const baseAll    = 'https://publicapi.ohgo.com/api/v1/cameras?page-all=true';
+  const base = 'https://publicapi.ohgo.com/api/v1/cameras?page-all=true';
 
-  const strategies = (base) => ([
-    { url: base + '&api-key=' + encodeURIComponent(key), opts: {} },
+  const strategies = [
+    { url: base + '&api-key=' + encodeURIComponent(key), opts: {} }, // best for GitHub Pages
     { url: base, opts: { headers: { 'Authorization': 'APIKEY ' + key } } },
     { url: base, opts: { headers: { 'authorization': 'APIKEY ' + key } } },
-  ]);
+  ];
 
   let lastErr = null;
-
-  // Try region=toledo
-  try{
-    const arr = await tryStrategies(strategies(baseToledo));
-    cameras = arr;
-    if (Array.isArray(cameras) && cameras.length){
-      status(`Loaded ${cameras.length} camera sites (Toledo region).`);
-      render();
-      return;
-    }
-  }catch(err){
-    lastErr = err;
-    console.warn('Toledo fetch failed:', err);
-  }
-
-  // Fallback: statewide + client filter
-  status('No region results; loading statewide and filtering to Toledo…');
-  try{
-    const arr = await tryStrategies(strategies(baseAll));
-    const filtered = arr.filter(cam => {
-      const lat = extractLat(cam);
-      const lon = extractLon(cam);
-      return (typeof lat === 'number' && typeof lon === 'number' && inToledoBbox(lat, lon)) || looksToledoByText(cam);
-    });
-    cameras = filtered;
-    status(`Loaded ${cameras.length} Toledo-area camera sites (filtered).`);
-    render();
-    return;
-  }catch(err){
-    lastErr = err;
-    console.warn('Statewide fetch failed:', err);
-  }
-
-  status('Failed to load cameras: ' + (lastErr ? lastErr.message : 'Unknown error'), true);
-}
-
-async function tryStrategies(list){
-  let lastErr = null;
-  for (const s of list){
+  for (const s of strategies){
     try{
       const data = await fetchJSON(s.url, s.opts);
-      const out = normalize(data);
-      if (Array.isArray(out)) return out;
+      const arr = normalize(data);
+      if (Array.isArray(arr)){
+        // Lucas County only
+        cameras = arr.filter(isLucasCounty);
+        status(`Loaded ${cameras.length} cameras (Lucas County).`);
+        render();
+        return;
+      }
     }catch(err){
       lastErr = err;
     }
   }
-  throw lastErr || new Error('All fetch strategies failed');
+  status('Failed to load cameras: ' + (lastErr ? lastErr.message : 'Unknown error'), true);
 }
 
-// ---------- Render (grid + map sync) ----------
+// ---------- Render ----------
 function render(){
   if (!Array.isArray(cameras)) cameras = [];
 
   const rawQ = (els.search && els.search.value) ? els.search.value : '';
   const q = rawQ.trim().toLowerCase();
 
-  const sizeField = els.imgSize ? els.imgSize.value : 'SmallUrl';
+  const sizeField = els.imgSize ? els.imgSize.value : 'SmallUrl'; // "SmallUrl" or "LargeUrl"
   els.grid.innerHTML = '';
 
   let count = 0;
 
   cameras.forEach((cam, idx) => {
+    // Views list
     const views =
       (Array.isArray(cam.CameraViews) && cam.CameraViews) ||
       (Array.isArray(cam.cameraViews) && cam.cameraViews) ||
@@ -167,45 +144,51 @@ function render(){
 
     if (!views.length) return;
 
-    const label =
-      cam.Location || cam.Description || cam.Name || cam.Title || cam.Roadway || 'Camera';
+    // Label = camera location (your request)
+    const labelStrict =
+      cam.Location || cam.location || cam.Description || cam.Name || cam.Title || cam.Roadway;
+    const label = labelStrict ? String(labelStrict) : 'Unknown location';
 
-    // Each site may have several views; we render a card per view.
-    views.forEach((v, vIdx) => {
+    views.forEach((v) => {
       const mainRoute =
         v.MainRoute || v.mainRoute || v.Route || v.Road || v.Roadway || cam.MainRoute || '';
       const direction = v.Direction || v.direction || '';
       const meta = [mainRoute, direction].filter(Boolean).join(' • ');
+
       const hay = (label + ' ' + meta).toLowerCase();
       if (q && !hay.includes(q)) return;
 
-      const imgUrl = v[sizeField] || v.SmallUrl || v.smallUrl || v.LargeUrl || v.largeUrl;
-      if (!imgUrl) return;
+      const small = v.SmallUrl || v.smallUrl || v[sizeField];
+      const large = v.LargeUrl || v.largeUrl || v[sizeField];
+      // Need at least one image
+      const imgBase = (sizeField === 'LargeUrl' ? (large || small) : (small || large));
+      if (!imgBase) return;
 
-      const cid = cameraId(cam, idx); // stable id per site
       const card = document.createElement('article');
       card.className = 'card';
-      card.dataset.camid = cid;
-
       card.innerHTML = `
         <header>
           <h3>${escapeHTML(label)}</h3>
           <div class="meta">${escapeHTML(meta)}</div>
         </header>
         <div class="figure">
-          <img data-base="${imgUrl}" alt="${escapeHTML(label)} — ${escapeHTML(meta)}">
+          <img data-small="${small || ''}" data-large="${large || ''}" alt="${escapeHTML(label)} — ${escapeHTML(meta)}">
           <div class="badge">Live</div>
         </div>
       `;
 
-      // Clicking a card pans the map to its marker (if we have one)
+      // Apply current size immediately
+      const img = card.querySelector('img');
+      applySizeToImg(img);
+
+      // Click → open large view modal
       card.addEventListener('click', () => {
-        const marker = markerByCamId.get(cid);
-        if (marker && map){
-          map.setView(marker.getLatLng(), Math.max(map.getZoom(), 12), { animate: true });
-          marker.openPopup();
-          highlightCard(cid);
-        }
+        openLightbox({
+          title: label,
+          meta,
+          small,
+          large
+        });
       });
 
       els.grid.appendChild(card);
@@ -219,107 +202,46 @@ function render(){
 
   startAutoRefresh();
   bustAll();
-  updateMap(); // sync markers with current filtered set
 }
 
-// ---------- Map ----------
-function ensureMap(){
-  if (!els.map || typeof L === 'undefined') return false;
-  if (map) return true;
-
-  // Center roughly on Toledo
-  map = L.map(els.map, { zoomControl: true }).setView([41.6528, -83.5379], 11);
-
-  // Free/Open tile layer
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19,
-    attribution: '© OpenStreetMap'
-  }).addTo(map);
-
-  markerLayer = L.layerGroup().addTo(map);
-
-  // Toolbar buttons
-  els.toggleMap?.addEventListener('click', () => {
-    if (!els.mapWrap) return;
-    const hidden = els.mapWrap.style.display === 'none';
-    els.mapWrap.style.display = hidden ? '' : 'none';
-    els.toggleMap.textContent = hidden ? 'Hide Map' : 'Show Map';
-    setTimeout(() => { map && map.invalidateSize(); }, 150);
-  });
-
-  els.fitMap?.addEventListener('click', () => fitMapToMarkers());
-
-  return true;
-}
-
-function updateMap(){
-  if (!ensureMap()) return;
-
-  markerLayer.clearLayers();
-  markerByCamId.clear();
-
-  // Build a set of cam IDs currently visible in the grid (filtered)
-  const visibleIds = new Set(Array.from(els.grid.querySelectorAll('.card')).map(c => c.dataset.camid));
-
-  // Add markers for visible cameras only
-  cameras.forEach((cam, idx) => {
-    const cid = cameraId(cam, idx);
-    if (!visibleIds.has(cid)) return;
-
-    const lat = extractLat(cam);
-    const lon = extractLon(cam);
-    if (typeof lat !== 'number' || typeof lon !== 'number') return;
-
-    const label = cam.Location || cam.Description || cam.Name || cam.Title || cam.Roadway || 'Camera';
-
-    const m = L.marker([lat, lon]);
-    m.addTo(markerLayer);
-    m.bindPopup(`<strong>${escapeHTML(label)}</strong>`);
-    m.on('click', () => {
-      scrollToCard(cid);
-      highlightCard(cid);
-    });
-
-    markerByCamId.set(cid, m);
-  });
-
-  fitMapToMarkers();
-}
-
-function fitMapToMarkers(){
-  if (!map || !markerLayer) return;
-  const markers = Object.values(markerLayer._layers || {});
-  if (!markers.length){
-    map.setView([41.6528, -83.5379], 11);
-    return;
+// ---------- Size handling ----------
+function applySizeToImg(img){
+  if (!img) return;
+  const wantLarge = (els.imgSize && els.imgSize.value === 'LargeUrl');
+  const base = wantLarge ? (img.dataset.large || img.dataset.small) : (img.dataset.small || img.dataset.large);
+  if (base){
+    img.setAttribute('data-base', base);
+    img.src = cacheBust(base);
   }
-  const group = L.featureGroup(markers);
-  map.fitBounds(group.getBounds().pad(0.15));
+}
+function applySizeToAll(){
+  document.querySelectorAll('.figure img').forEach(applySizeToImg);
+  bustAll();
 }
 
-function scrollToCard(cid){
-  const card = els.grid.querySelector(`.card[data-camid="${CSS.escape(cid)}"]`);
-  if (!card) return;
-  card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+// ---------- Lightbox ----------
+function openLightbox({ title, meta, small, large }){
+  const big = large || small;
+  if (!big) return;
+  els.lbTitle.textContent = title || '';
+  els.lbMeta.textContent = meta || '';
+  els.lbImg.src = cacheBust(big);
+  els.lbImg.alt = (title ? title + ' — ' : '') + (meta || '');
+  els.lb.removeAttribute('hidden');
 }
-function highlightCard(cid){
-  const card = els.grid.querySelector(`.card[data-camid="${CSS.escape(cid)}"]`);
-  if (!card) return;
-  card.style.outline = '2px solid #5aa7ff';
-  setTimeout(() => { card.style.outline = ''; }, 1200);
+function closeLightbox(){
+  els.lb.setAttribute('hidden', '');
+  els.lbImg.src = '';
 }
 
 // ---------- Refresh ----------
 function bustAll(){
-  const now = Date.now();
   document.querySelectorAll('.figure img').forEach(img => {
     const base = img.getAttribute('data-base');
     if (!base) return;
-    const sep = base.includes('?') ? '&' : '?';
-    img.src = base + sep + 't=' + now;
+    img.src = cacheBust(base);
   });
 }
-
 function startAutoRefresh(){
   stopAutoRefresh();
   const seconds = parseInt(els.interval && els.interval.value, 10) || 10;
@@ -332,20 +254,14 @@ function stopAutoRefresh(){
 // ---------- Wire up ----------
 els.saveKey?.addEventListener('click', () => { setKey(els.apiKey.value.trim()); fetchCameras(); });
 els.interval?.addEventListener('change', () => { startAutoRefresh(); });
-els.imgSize?.addEventListener('change', () => { render(); });
+els.imgSize?.addEventListener('change', () => { applySizeToAll(); }); // instant thumbnail switch
 els.search?.addEventListener('input', () => render());
 els.refreshNow?.addEventListener('click', () => bustAll());
 
-// Add a one-time Clear button next to the search
-(function addClearButtonOnce(){
-  if (!els.search || document.getElementById('clearFilterBtn')) return;
-  const btn = document.createElement('button');
-  btn.id = 'clearFilterBtn';
-  btn.textContent = 'Clear';
-  btn.style.marginLeft = '6px';
-  btn.addEventListener('click', () => { els.search.value = ''; render(); });
-  els.search.insertAdjacentElement('afterend', btn);
-})();
+// Lightbox controls
+els.lbBackdrop?.addEventListener('click', closeLightbox);
+els.lbClose?.addEventListener('click', closeLightbox);
+document.addEventListener('keydown', (e)=>{ if(e.key==='Escape' && !els.lb.hasAttribute('hidden')) closeLightbox(); });
 
 // Init
 els.apiKey && (els.apiKey.value = getKey());
