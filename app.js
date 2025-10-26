@@ -1,4 +1,4 @@
-// app.js — Toledo OHGO Cameras (robust GitHub Pages / Google Sites build)
+// app.js — Toledo OHGO Cameras with Mini Map (GitHub Pages / Google Sites friendly)
 
 // ---------- DOM ----------
 const els = {
@@ -10,10 +10,18 @@ const els = {
   status: document.getElementById('status'),
   grid: document.getElementById('grid'),
   refreshNow: document.getElementById('refreshNow'),
+  map: document.getElementById('map'),
+  mapWrap: document.getElementById('mapWrap'),
+  toggleMap: document.getElementById('toggleMap'),
+  fitMap: document.getElementById('fitMap'),
 };
 
 let cameras = [];
 let timer = null;
+
+// Map state
+let map, markerLayer;
+const markerByCamId = new Map();
 
 // ---------- Storage ----------
 function getKey(){ return localStorage.getItem('ohgo_api_key') || ''; }
@@ -31,7 +39,6 @@ function escapeHTML(s){
 
 // ---------- Data helpers ----------
 function normalize(result){
-  // Return an array of "site" objects no matter how the API wraps it
   try{
     if (!result) return [];
     if (Array.isArray(result)) return result;
@@ -57,20 +64,20 @@ async function fetchJSON(url, opts={}){
 
 // Rough bounding box around the Toledo metro
 function inToledoBbox(lat, lon){
-  // Adjust if you want tighter limits; this covers Lucas County & near suburbs
   return lat <= 41.85 && lat >= 41.30 && lon >= -84.10 && lon <= -83.20;
 }
-
 function looksToledoByText(cam){
   const txt = JSON.stringify(cam || {}).toLowerCase();
-  return txt.includes('toledo') || txt.includes('lucas') || txt.includes('i-75') || txt.includes('i75') || txt.includes('i-475') || txt.includes('i475');
+  return txt.includes('toledo') || txt.includes('lucas') || txt.includes('i-75') || txt.includes('i-475') || txt.includes('i75') || txt.includes('i475');
 }
-
 function extractLat(cam){
-  return cam.Latitude ?? cam.latitude ?? cam.lat ?? (cam.LocationLat ?? cam.locationLat);
+  return cam.Latitude ?? cam.latitude ?? cam.lat ?? cam.LocationLat ?? cam.locationLat ?? null;
 }
 function extractLon(cam){
-  return cam.Longitude ?? cam.longitude ?? cam.lon ?? cam.lng ?? cam.long ?? (cam.LocationLon ?? cam.locationLon);
+  return cam.Longitude ?? cam.longitude ?? cam.lon ?? cam.lng ?? cam.long ?? cam.LocationLon ?? cam.locationLon ?? null;
+}
+function cameraId(cam, idx){
+  return cam.Id ?? cam.ID ?? cam.CameraId ?? cam.CameraID ?? `site-${idx}`;
 }
 
 // ---------- Fetch logic ----------
@@ -90,7 +97,7 @@ async function fetchCameras(){
 
   let lastErr = null;
 
-  // 1) Try region=toledo first
+  // Try region=toledo
   try{
     const arr = await tryStrategies(strategies(baseToledo));
     cameras = arr;
@@ -104,11 +111,10 @@ async function fetchCameras(){
     console.warn('Toledo fetch failed:', err);
   }
 
-  // 2) Fallback: statewide fetch, then client-side filter
+  // Fallback: statewide + client filter
   status('No region results; loading statewide and filtering to Toledo…');
   try{
     const arr = await tryStrategies(strategies(baseAll));
-    // Filter by bbox OR region-like text
     const filtered = arr.filter(cam => {
       const lat = extractLat(cam);
       const lon = extractLon(cam);
@@ -135,13 +141,12 @@ async function tryStrategies(list){
       if (Array.isArray(out)) return out;
     }catch(err){
       lastErr = err;
-      // keep trying the next strategy
     }
   }
   throw lastErr || new Error('All fetch strategies failed');
 }
 
-// ---------- Render ----------
+// ---------- Render (grid + map sync) ----------
 function render(){
   if (!Array.isArray(cameras)) cameras = [];
 
@@ -151,45 +156,37 @@ function render(){
   const sizeField = els.imgSize ? els.imgSize.value : 'SmallUrl';
   els.grid.innerHTML = '';
 
-  // Debug info in console for quick diagnosis
-  console.log('[Toledo Cams] sites:', cameras.length, q ? `filter="${q}"` : '(no filter)');
-  if (cameras.length && typeof cameras[0] === 'object') {
-    console.log('[Toledo Cams] sample site keys:', Object.keys(cameras[0]));
-  }
-
   let count = 0;
 
-  for (const cam of cameras) {
-    // Accept multiple shapes: CameraViews / cameraViews / Views / views
+  cameras.forEach((cam, idx) => {
     const views =
       (Array.isArray(cam.CameraViews) && cam.CameraViews) ||
       (Array.isArray(cam.cameraViews) && cam.cameraViews) ||
       (Array.isArray(cam.Views) && cam.Views) ||
       (Array.isArray(cam.views) && cam.views) || [];
 
-    // If the site has no views, skip (some records are metadata-only)
-    if (!views.length) continue;
+    if (!views.length) return;
 
-    // Site label fallbacks
     const label =
       cam.Location || cam.Description || cam.Name || cam.Title || cam.Roadway || 'Camera';
 
-    for (const v of views) {
+    // Each site may have several views; we render a card per view.
+    views.forEach((v, vIdx) => {
       const mainRoute =
         v.MainRoute || v.mainRoute || v.Route || v.Road || v.Roadway || cam.MainRoute || '';
       const direction = v.Direction || v.direction || '';
-
       const meta = [mainRoute, direction].filter(Boolean).join(' • ');
       const hay = (label + ' ' + meta).toLowerCase();
+      if (q && !hay.includes(q)) return;
 
-      if (q && !hay.includes(q)) continue;
-
-      // Image url fallbacks across sizes/keys
       const imgUrl = v[sizeField] || v.SmallUrl || v.smallUrl || v.LargeUrl || v.largeUrl;
-      if (!imgUrl) continue;
+      if (!imgUrl) return;
 
+      const cid = cameraId(cam, idx); // stable id per site
       const card = document.createElement('article');
       card.className = 'card';
+      card.dataset.camid = cid;
+
       card.innerHTML = `
         <header>
           <h3>${escapeHTML(label)}</h3>
@@ -200,10 +197,21 @@ function render(){
           <div class="badge">Live</div>
         </div>
       `;
+
+      // Clicking a card pans the map to its marker (if we have one)
+      card.addEventListener('click', () => {
+        const marker = markerByCamId.get(cid);
+        if (marker && map){
+          map.setView(marker.getLatLng(), Math.max(map.getZoom(), 12), { animate: true });
+          marker.openPopup();
+          highlightCard(cid);
+        }
+      });
+
       els.grid.appendChild(card);
       count++;
-    }
-  }
+    });
+  });
 
   if (count === 0) {
     els.grid.innerHTML = '<div class="empty">No cameras match your filter.</div>';
@@ -211,6 +219,94 @@ function render(){
 
   startAutoRefresh();
   bustAll();
+  updateMap(); // sync markers with current filtered set
+}
+
+// ---------- Map ----------
+function ensureMap(){
+  if (!els.map || typeof L === 'undefined') return false;
+  if (map) return true;
+
+  // Center roughly on Toledo
+  map = L.map(els.map, { zoomControl: true }).setView([41.6528, -83.5379], 11);
+
+  // Free/Open tile layer
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '© OpenStreetMap'
+  }).addTo(map);
+
+  markerLayer = L.layerGroup().addTo(map);
+
+  // Toolbar buttons
+  els.toggleMap?.addEventListener('click', () => {
+    if (!els.mapWrap) return;
+    const hidden = els.mapWrap.style.display === 'none';
+    els.mapWrap.style.display = hidden ? '' : 'none';
+    els.toggleMap.textContent = hidden ? 'Hide Map' : 'Show Map';
+    setTimeout(() => { map && map.invalidateSize(); }, 150);
+  });
+
+  els.fitMap?.addEventListener('click', () => fitMapToMarkers());
+
+  return true;
+}
+
+function updateMap(){
+  if (!ensureMap()) return;
+
+  markerLayer.clearLayers();
+  markerByCamId.clear();
+
+  // Build a set of cam IDs currently visible in the grid (filtered)
+  const visibleIds = new Set(Array.from(els.grid.querySelectorAll('.card')).map(c => c.dataset.camid));
+
+  // Add markers for visible cameras only
+  cameras.forEach((cam, idx) => {
+    const cid = cameraId(cam, idx);
+    if (!visibleIds.has(cid)) return;
+
+    const lat = extractLat(cam);
+    const lon = extractLon(cam);
+    if (typeof lat !== 'number' || typeof lon !== 'number') return;
+
+    const label = cam.Location || cam.Description || cam.Name || cam.Title || cam.Roadway || 'Camera';
+
+    const m = L.marker([lat, lon]);
+    m.addTo(markerLayer);
+    m.bindPopup(`<strong>${escapeHTML(label)}</strong>`);
+    m.on('click', () => {
+      scrollToCard(cid);
+      highlightCard(cid);
+    });
+
+    markerByCamId.set(cid, m);
+  });
+
+  fitMapToMarkers();
+}
+
+function fitMapToMarkers(){
+  if (!map || !markerLayer) return;
+  const markers = Object.values(markerLayer._layers || {});
+  if (!markers.length){
+    map.setView([41.6528, -83.5379], 11);
+    return;
+  }
+  const group = L.featureGroup(markers);
+  map.fitBounds(group.getBounds().pad(0.15));
+}
+
+function scrollToCard(cid){
+  const card = els.grid.querySelector(`.card[data-camid="${CSS.escape(cid)}"]`);
+  if (!card) return;
+  card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+function highlightCard(cid){
+  const card = els.grid.querySelector(`.card[data-camid="${CSS.escape(cid)}"]`);
+  if (!card) return;
+  card.style.outline = '2px solid #5aa7ff';
+  setTimeout(() => { card.style.outline = ''; }, 1200);
 }
 
 // ---------- Refresh ----------
@@ -235,10 +331,10 @@ function stopAutoRefresh(){
 
 // ---------- Wire up ----------
 els.saveKey?.addEventListener('click', () => { setKey(els.apiKey.value.trim()); fetchCameras(); });
-els.interval?.addEventListener('change', startAutoRefresh);
-els.imgSize?.addEventListener('change', render);
+els.interval?.addEventListener('change', () => { startAutoRefresh(); });
+els.imgSize?.addEventListener('change', () => { render(); });
 els.search?.addEventListener('input', () => render());
-els.refreshNow?.addEventListener('click', bustAll);
+els.refreshNow?.addEventListener('click', () => bustAll());
 
 // Add a one-time Clear button next to the search
 (function addClearButtonOnce(){
