@@ -1,4 +1,4 @@
-// app.js — Lucas County only, location labels, working size toggle, large-view modal
+// Lucas County (OH) ODOT/OHGO cameras with map + lightbox + robust parsing
 
 // ---------- DOM ----------
 const els = {
@@ -10,6 +10,11 @@ const els = {
   status: document.getElementById('status'),
   grid: document.getElementById('grid'),
   refreshNow: document.getElementById('refreshNow'),
+  // Map
+  map: document.getElementById('map'),
+  mapWrap: document.getElementById('mapWrap'),
+  toggleMap: document.getElementById('toggleMap'),
+  fitMap: document.getElementById('fitMap'),
   // Lightbox
   lb: document.getElementById('lightbox'),
   lbBackdrop: document.getElementById('lbBackdrop'),
@@ -21,6 +26,10 @@ const els = {
 
 let cameras = [];
 let timer = null;
+
+// Map state
+let map, markerLayer;
+const markerByCamId = new Map();
 
 // ---------- Storage ----------
 function getKey(){ return localStorage.getItem('ohgo_api_key') || ''; }
@@ -63,7 +72,7 @@ async function fetchJSON(url, opts={}){
   throw new Error('Expected JSON but got: ' + t.slice(0,200));
 }
 
-// County, Lat, Lon extraction
+// Extractors
 function extractCounty(cam){
   return cam.County ?? cam.county ?? cam.CountyName ?? cam.countyName ?? null;
 }
@@ -73,18 +82,19 @@ function extractLat(cam){
 function extractLon(cam){
   return cam.Longitude ?? cam.longitude ?? cam.lon ?? cam.lng ?? cam.long ?? cam.LocationLon ?? cam.locationLon ?? null;
 }
-// Lucas County filter
+function cameraId(cam, idx){
+  return cam.Id ?? cam.ID ?? cam.CameraId ?? cam.CameraID ?? `site-${idx}`;
+}
+// Lucas County check
 function isLucasCounty(cam){
   const c = (extractCounty(cam) || '').toString().toLowerCase();
   if (c.includes('lucas')) return true;
-  // Fallback: Lucas County / Toledo-ish bbox
   const lat = extractLat(cam), lon = extractLon(cam);
   if (typeof lat === 'number' && typeof lon === 'number'){
-    // Tight box around Lucas County
-    const inBox = (lat <= 41.85 && lat >= 41.30 && lon >= -83.90 && lon <= -83.20);
+    // tighter Lucas County bbox
+    const inBox = (lat <= 41.85 && lat >= 41.45 && lon >= -83.90 && lon <= -83.20);
     return inBox;
   }
-  // Last-chance hint via text
   const txt = JSON.stringify(cam || {}).toLowerCase();
   return txt.includes('lucas') || txt.includes('toledo');
 }
@@ -98,7 +108,7 @@ async function fetchCameras(){
   const base = 'https://publicapi.ohgo.com/api/v1/cameras?page-all=true';
 
   const strategies = [
-    { url: base + '&api-key=' + encodeURIComponent(key), opts: {} }, // best for GitHub Pages
+    { url: base + '&api-key=' + encodeURIComponent(key), opts: {} },
     { url: base, opts: { headers: { 'Authorization': 'APIKEY ' + key } } },
     { url: base, opts: { headers: { 'authorization': 'APIKEY ' + key } } },
   ];
@@ -109,7 +119,6 @@ async function fetchCameras(){
       const data = await fetchJSON(s.url, s.opts);
       const arr = normalize(data);
       if (Array.isArray(arr)){
-        // Lucas County only
         cameras = arr.filter(isLucasCounty);
         status(`Loaded ${cameras.length} cameras (Lucas County).`);
         render();
@@ -117,36 +126,45 @@ async function fetchCameras(){
       }
     }catch(err){
       lastErr = err;
+      console.warn('[Fetch strategy failed]', err);
     }
   }
   status('Failed to load cameras: ' + (lastErr ? lastErr.message : 'Unknown error'), true);
 }
 
-// ---------- Render ----------
+// ---------- Render (grid + map sync) ----------
 function render(){
   if (!Array.isArray(cameras)) cameras = [];
 
   const rawQ = (els.search && els.search.value) ? els.search.value : '';
   const q = rawQ.trim().toLowerCase();
 
-  const sizeField = els.imgSize ? els.imgSize.value : 'SmallUrl'; // "SmallUrl" or "LargeUrl"
+  const sizeField = els.imgSize ? els.imgSize.value : 'SmallUrl';
   els.grid.innerHTML = '';
 
   let count = 0;
 
   cameras.forEach((cam, idx) => {
-    // Views list
-    const views =
+    // Accept multiple shapes for views; some records might not expose per-view; handle single URL too
+    let views =
       (Array.isArray(cam.CameraViews) && cam.CameraViews) ||
       (Array.isArray(cam.cameraViews) && cam.cameraViews) ||
       (Array.isArray(cam.Views) && cam.Views) ||
       (Array.isArray(cam.views) && cam.views) || [];
 
+    // If no explicit views but we have image urls on the camera itself, synthesize one
+    if (!views.length && (cam.SmallUrl || cam.LargeUrl || cam.smallUrl || cam.largeUrl)){
+      views = [{
+        SmallUrl: cam.SmallUrl || cam.smallUrl || null,
+        LargeUrl: cam.LargeUrl || cam.largeUrl || null,
+        MainRoute: cam.MainRoute || cam.Route || cam.Roadway || ''
+      }];
+    }
+
     if (!views.length) return;
 
-    // Label = camera location (your request)
-    const labelStrict =
-      cam.Location || cam.location || cam.Description || cam.Name || cam.Title || cam.Roadway;
+    // Label must be the camera location (prefer Location)
+    const labelStrict = cam.Location || cam.location || cam.Description || cam.Name || cam.Title || cam.Roadway;
     const label = labelStrict ? String(labelStrict) : 'Unknown location';
 
     views.forEach((v) => {
@@ -158,14 +176,16 @@ function render(){
       const hay = (label + ' ' + meta).toLowerCase();
       if (q && !hay.includes(q)) return;
 
-      const small = v.SmallUrl || v.smallUrl || v[sizeField];
-      const large = v.LargeUrl || v.largeUrl || v[sizeField];
-      // Need at least one image
-      const imgBase = (sizeField === 'LargeUrl' ? (large || small) : (small || large));
-      if (!imgBase) return;
+      const small = v.SmallUrl || v.smallUrl || null;
+      const large = v.LargeUrl || v.largeUrl || null;
+      const chosen = (sizeField === 'LargeUrl') ? (large || small) : (small || large);
+      if (!chosen) return;
+
+      const cid = cameraId(cam, idx);
 
       const card = document.createElement('article');
       card.className = 'card';
+      card.dataset.camid = cid;
       card.innerHTML = `
         <header>
           <h3>${escapeHTML(label)}</h3>
@@ -177,18 +197,12 @@ function render(){
         </div>
       `;
 
-      // Apply current size immediately
       const img = card.querySelector('img');
-      applySizeToImg(img);
+      applySizeToImg(img); // pick small/large instantly
 
-      // Click → open large view modal
+      // Click -> large view modal
       card.addEventListener('click', () => {
-        openLightbox({
-          title: label,
-          meta,
-          small,
-          large
-        });
+        openLightbox({ title: label, meta, small, large });
       });
 
       els.grid.appendChild(card);
@@ -202,6 +216,85 @@ function render(){
 
   startAutoRefresh();
   bustAll();
+  updateMap();
+}
+
+// ---------- Map ----------
+function ensureMap(){
+  if (!els.map || typeof L === 'undefined') return false;
+  if (map) return true;
+
+  map = L.map(els.map, { zoomControl: true }).setView([41.6528, -83.5379], 11);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '© OpenStreetMap'
+  }).addTo(map);
+
+  markerLayer = L.layerGroup().addTo(map);
+
+  els.toggleMap?.addEventListener('click', () => {
+    const hidden = els.mapWrap.style.display === 'none';
+    els.mapWrap.style.display = hidden ? '' : 'none';
+    els.toggleMap.textContent = hidden ? 'Hide Map' : 'Show Map';
+    setTimeout(() => { map && map.invalidateSize(); }, 150);
+  });
+  els.fitMap?.addEventListener('click', () => fitMapToMarkers());
+
+  return true;
+}
+
+function updateMap(){
+  if (!ensureMap()) return;
+  markerLayer.clearLayers();
+  markerByCamId.clear();
+
+  // find visible cards
+  const visible = Array.from(els.grid.querySelectorAll('.card'));
+  const ids = new Set(visible.map(c => c.dataset.camid));
+
+  cameras.forEach((cam, idx) => {
+    const cid = cameraId(cam, idx);
+    if (!ids.has(cid)) return;
+
+    const lat = extractLat(cam);
+    const lon = extractLon(cam);
+    if (typeof lat !== 'number' || typeof lon !== 'number') return;
+
+    const label = cam.Location || cam.location || cam.Description || cam.Name || cam.Title || cam.Roadway || 'Camera';
+
+    const m = L.marker([lat, lon]).addTo(markerLayer);
+    m.bindPopup(`<strong>${escapeHTML(label)}</strong>`);
+    m.on('click', () => {
+      scrollToCard(cid);
+      highlightCard(cid);
+    });
+    markerByCamId.set(cid, m);
+  });
+
+  fitMapToMarkers();
+}
+
+function fitMapToMarkers(){
+  if (!map || !markerLayer) return;
+  const layers = Object.values(markerLayer._layers || {});
+  if (!layers.length){
+    map.setView([41.6528, -83.5379], 11);
+    return;
+  }
+  const group = L.featureGroup(layers);
+  map.fitBounds(group.getBounds().pad(0.15));
+}
+
+function scrollToCard(cid){
+  const card = els.grid.querySelector(`.card[data-camid="${CSS.escape(cid)}"]`);
+  if (!card) return;
+  card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+function highlightCard(cid){
+  const card = els.grid.querySelector(`.card[data-camid="${CSS.escape(cid)}"]`);
+  if (!card) return;
+  card.style.outline = '2px solid #5aa7ff';
+  setTimeout(() => { card.style.outline = ''; }, 1200);
 }
 
 // ---------- Size handling ----------
@@ -212,6 +305,8 @@ function applySizeToImg(img){
   if (base){
     img.setAttribute('data-base', base);
     img.src = cacheBust(base);
+  } else {
+    img.removeAttribute('data-base');
   }
 }
 function applySizeToAll(){
@@ -254,7 +349,7 @@ function stopAutoRefresh(){
 // ---------- Wire up ----------
 els.saveKey?.addEventListener('click', () => { setKey(els.apiKey.value.trim()); fetchCameras(); });
 els.interval?.addEventListener('change', () => { startAutoRefresh(); });
-els.imgSize?.addEventListener('change', () => { applySizeToAll(); }); // instant thumbnail switch
+els.imgSize?.addEventListener('change', () => { applySizeToAll(); }); // instant
 els.search?.addEventListener('input', () => render());
 els.refreshNow?.addEventListener('click', () => bustAll());
 

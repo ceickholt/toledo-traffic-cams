@@ -1,16 +1,18 @@
 <!doctype html>
 <html lang="en">
 <head>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Toledo Traffic Cameras (ODOT / OHGO)</title>
+  <title>Lucas County Traffic Cameras (ODOT / OHGO)</title>
   <link rel="stylesheet" href="styles.css">
+
+  <!-- Leaflet (map) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 </head>
 <body>
   <header>
-    <h1>Toledo Traffic Cameras</h1>
+    <h1>Lucas County Traffic Cameras</h1>
     <div class="controls">
       <label>OHGO API Key:
         <input type="password" id="apiKey" placeholder="Paste your API key">
@@ -35,42 +37,42 @@
       <button id="refreshNow">Refresh now</button>
     </div>
     <p class="hint">
-      Uses the <a href="https://publicapi.ohgo.com/docs/v1/cameras" target="_blank" rel="noreferrer">OHGO Cameras API</a> (ODOT).
-      Enter your API key above (stored locally in your browser).
+      Data & images from <strong>ODOT / OHGO</strong>. Your API key is stored locally in this browser only.
     </p>
   </header>
 
+  <section id="mapWrap">
+    <div class="map-toolbar">
+      <strong>Map</strong>
+      <span class="spacer"></span>
+      <button id="toggleMap">Hide Map</button>
+      <button id="fitMap">Fit to Cameras</button>
+    </div>
+    <div id="map"></div>
+  </section>
+
   <main>
-    <section id="mapWrap">
-  <div class="map-toolbar">
-    <strong>Map</strong>
-    <span class="spacer"></span>
-    <button id="toggleMap">Hide Map</button>
-    <button id="fitMap">Fit to Cameras</button>
-  </div>
-  <div id="map"></div>
-</section>
     <div id="status" class="status">Loading…</div>
     <div id="grid" class="grid"></div>
   </main>
 
   <footer>
-    <small>
-      Snapshot images update approximately every 5 seconds. Data &copy; Ohio Department of Transportation (ODOT) / OHGO.
-    </small>
+    <small>Snapshots typically update every ~5s.</small>
   </footer>
-<!-- Lightbox modal for large camera view -->
-<div id="lightbox" class="lb" hidden>
-  <div class="lb-backdrop" id="lbBackdrop"></div>
-  <div class="lb-dialog">
-    <button class="lb-close" id="lbClose" aria-label="Close">×</button>
-    <h2 id="lbTitle"></h2>
-    <div class="lb-figure">
-      <img id="lbImg" alt="">
+
+  <!-- Lightbox modal for large camera view -->
+  <div id="lightbox" class="lb" hidden>
+    <div class="lb-backdrop" id="lbBackdrop"></div>
+    <div class="lb-dialog">
+      <button class="lb-close" id="lbClose" aria-label="Close">×</button>
+      <h2 id="lbTitle"></h2>
+      <div class="lb-figure">
+        <img id="lbImg" alt="">
+      </div>
+      <div class="lb-meta" id="lbMeta"></div>
     </div>
-    <div class="lb-meta" id="lbMeta"></div>
   </div>
-</div>
+
   <script src="app.js"></script>
 </body>
 </html>
