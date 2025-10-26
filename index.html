@@ -5,18 +5,19 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Lucas County Traffic Cameras (ODOT / OHGO)</title>
   <link rel="stylesheet" href="styles.css">
-
-  <!-- Leaflet (map) -->
+  <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <!-- MarkerCluster -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" crossorigin="">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" crossorigin="">
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js" crossorigin=""></script>
 </head>
 <body>
   <header>
     <h1>Lucas County Traffic Cameras</h1>
     <div class="controls">
-      <label>OHGO API Key:
-        <input type="password" id="apiKey" placeholder="Paste your API key">
-      </label>
+      <label>OHGO API Key: <input type="password" id="apiKey" placeholder="Paste your API key"></label>
       <button id="saveKey">Save</button>
       <label>Refresh every:
         <select id="interval">
@@ -33,18 +34,28 @@
           <option value="LargeUrl">Large</option>
         </select>
       </label>
+      <label>Sort:
+        <select id="sortBy">
+          <option value="route" selected>Route</option>
+          <option value="location">Location</option>
+          <option value="direction">Direction</option>
+          <option value="favorites">Favorites first</option>
+        </select>
+      </label>
+      <label><input type="checkbox" id="clusterToggle" checked> Cluster map</label>
+      <label><input type="checkbox" id="wallboardToggle"> Wallboard</label>
+      <label id="cycleWrap" style="display:none">
+        Cycle (s): <input type="number" id="cycleSeconds" min="5" value="10" style="width:64px">
+      </label>
       <input type="search" id="search" placeholder="Filter by route/intersection…">
       <button id="refreshNow">Refresh now</button>
     </div>
-    <p class="hint">
-      Data & images from <strong>ODOT / OHGO</strong>. Your API key is stored locally in this browser only.
-    </p>
+    <p class="hint">Data & images from <strong>ODOT / OHGO</strong>. Your API key is stored locally in this browser only.</p>
   </header>
 
   <section id="mapWrap">
     <div class="map-toolbar">
-      <strong>Map</strong>
-      <span class="spacer"></span>
+      <strong>Map</strong><span class="spacer"></span>
       <button id="toggleMap">Hide Map</button>
       <button id="fitMap">Fit to Cameras</button>
     </div>
@@ -56,19 +67,14 @@
     <div id="grid" class="grid"></div>
   </main>
 
-  <footer>
-    <small>Snapshots typically update every ~5s.</small>
-  </footer>
+  <footer><small>Snapshots typically update every ~5s.</small></footer>
 
-  <!-- Lightbox modal for large camera view -->
   <div id="lightbox" class="lb" hidden>
     <div class="lb-backdrop" id="lbBackdrop"></div>
     <div class="lb-dialog">
       <button class="lb-close" id="lbClose" aria-label="Close">×</button>
       <h2 id="lbTitle"></h2>
-      <div class="lb-figure">
-        <img id="lbImg" alt="">
-      </div>
+      <div class="lb-figure"><img id="lbImg" alt=""></div>
       <div class="lb-meta" id="lbMeta"></div>
     </div>
   </div>
