@@ -59,7 +59,18 @@
       Snapshot images update approximately every 5 seconds. Data &copy; Ohio Department of Transportation (ODOT) / OHGO.
     </small>
   </footer>
-
+<!-- Lightbox modal for large camera view -->
+<div id="lightbox" class="lb" hidden>
+  <div class="lb-backdrop" id="lbBackdrop"></div>
+  <div class="lb-dialog">
+    <button class="lb-close" id="lbClose" aria-label="Close">×</button>
+    <h2 id="lbTitle"></h2>
+    <div class="lb-figure">
+      <img id="lbImg" alt="">
+    </div>
+    <div class="lb-meta" id="lbMeta"></div>
+  </div>
+</div>
   <script src="app.js"></script>
 </body>
 </html>
